@@ -127,6 +127,7 @@ jobs:
     needs: package
     if: needs.package.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
