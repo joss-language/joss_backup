@@ -1,5 +1,5 @@
 name: joss_backup
-version: 2.0.0
+version: 2.0.1
 description: Plugin oficial para realizar backups y programar respaldos en Joss.
 repository: https://github.com/josprox/joss_backup
 license: MIT

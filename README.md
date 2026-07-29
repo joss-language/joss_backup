@@ -5,7 +5,7 @@
 ## Instalacion
 
 ```bash
-joss pub add joss_backup 2.0.0
+joss pub add joss_backup 2.0.1
 ```
 
 ## Configuracion

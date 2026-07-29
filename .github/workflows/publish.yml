@@ -108,7 +108,9 @@ jobs:
         run: |
           name="${{ steps.manifest.outputs.name }}"
           (cd joss-core && go run ./cmd/joss build package "$GITHUB_WORKSPACE")
-          (cd joss-core && go run ./cmd/joss package inspect "$GITHUB_WORKSPACE/$name.jp")
+          inspect_output="$(cd joss-core && go run ./cmd/joss package inspect "$GITHUB_WORKSPACE/$name.jp")"
+          printf '%s\n' "$inspect_output"
+          printf '%s\n' "$inspect_output" | grep -Eq '^Firma: Ed25519 .* verificada$'
           mkdir -p release
           cp "$name.jp" "release/$name.jp"
           sha256sum "release/$name.jp" > "release/$name-${{ steps.manifest.outputs.version }}-sha256.txt"
