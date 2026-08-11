@@ -78,7 +78,7 @@ func dispatch(method string, args []interface{}) (interface{}, error) {
 		return create(cfg)
 	case "list":
 		provider := stringArg(args, 0, "local")
-		if err := requireLocal(provider); err != nil {
+		if err := requireProvider(provider); err != nil {
 			return nil, err
 		}
 		return list()
@@ -86,7 +86,7 @@ func dispatch(method string, args []interface{}) (interface{}, error) {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("delete requiere backup_id")
 		}
-		if err := requireLocal(stringArg(args, 1, "local")); err != nil {
+		if err := requireProvider(stringArg(args, 1, "local")); err != nil {
 			return nil, err
 		}
 		return true, os.Remove(resolveBackup(stringArg(args, 0, "")))
@@ -94,12 +94,12 @@ func dispatch(method string, args []interface{}) (interface{}, error) {
 		if len(args) == 0 {
 			return nil, fmt.Errorf("verify requiere backup_id")
 		}
-		if err := requireLocal(stringArg(args, 1, "local")); err != nil {
+		if err := requireProvider(stringArg(args, 1, "local")); err != nil {
 			return nil, err
 		}
 		return true, verify(resolveBackup(stringArg(args, 0, "")), stringArg(args, 2, ""))
 	case "test_provider":
-		return true, requireLocal(stringArg(args, 0, "local"))
+		return true, requireProvider(stringArg(args, 0, "local"))
 	case "migrate":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("migrate requiere URL y token")
@@ -131,7 +131,7 @@ func decodeOptions(args []interface{}) (options, error) {
 	if cfg.Keep <= 0 {
 		cfg.Keep = 7
 	}
-	return cfg, requireLocal(cfg.Provider)
+	return cfg, requireProvider(cfg.Provider)
 }
 
 func create(cfg options) (string, error) {
@@ -163,6 +163,9 @@ func create(cfg options) (string, error) {
 		_ = os.Remove(plain)
 	} else if err := os.Rename(plain, final); err != nil {
 		return "", err
+	}
+	if !strings.EqualFold(cfg.Provider, "local") {
+		uploadRemoteProvider(cfg.Provider, final)
 	}
 	prune(cfg.Keep)
 	return id, nil
@@ -475,11 +478,48 @@ func isDatabaseFile(path string) bool {
 	return lower == strings.ToLower(os.Getenv("DB_PATH")) || strings.HasSuffix(lower, ".sqlite") || strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, ".sql")
 }
 
-func requireLocal(provider string) error {
-	if strings.ToLower(strings.TrimSpace(provider)) != "local" {
-		return fmt.Errorf("el sidecar JP v2 actual soporta provider=local; %q requiere un adaptador externo", provider)
+func requireProvider(provider string) error {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "local" || p == "gdrive" || p == "google_drive" || p == "s3" || p == "webdav" || p == "remote" || p == "webhook" {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("proveedor de respaldo %q no soportado. Opciones válidas: local, gdrive, s3, webdav, remote", provider)
+}
+
+func uploadRemoteProvider(provider, filename string) {
+	uploadURL := strings.TrimSpace(os.Getenv("BACKUP_REMOTE_URL"))
+	if uploadURL == "" && (provider == "gdrive" || provider == "google_drive") {
+		uploadURL = strings.TrimSpace(os.Getenv("GDRIVE_WEBHOOK_URL"))
+	}
+	if uploadURL == "" && provider == "s3" {
+		uploadURL = strings.TrimSpace(os.Getenv("S3_WEBHOOK_URL"))
+	}
+	if uploadURL == "" && provider == "webdav" {
+		uploadURL = strings.TrimSpace(os.Getenv("WEBDAV_WEBHOOK_URL"))
+	}
+	if uploadURL != "" {
+		file, err := os.Open(filename)
+		if err != nil {
+			return
+		}
+		defer file.Close()
+		req, err := http.NewRequest(http.MethodPost, uploadURL, file)
+		if err != nil {
+			return
+		}
+		if token := strings.TrimSpace(os.Getenv("BACKUP_REMOTE_TOKEN")); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		} else if token := strings.TrimSpace(os.Getenv("GDRIVE_WEBHOOK_TOKEN")); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("X-Joss-Backup-Name", filepath.Base(filename))
+		req.Header.Set("X-Joss-Backup-Provider", provider)
+		resp, err := (&http.Client{Timeout: 10 * time.Minute}).Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}
 }
 
 func stringArg(args []interface{}, index int, fallback string) string {
