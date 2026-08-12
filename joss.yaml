@@ -1,4 +1,4 @@
-name: joss_backup
+﻿name: joss_backup
 version: 2.0.4
 description: Plugin oficial para realizar backups y programar respaldos en Joss.
 repository: https://github.com/josprox/joss_backup
@@ -10,10 +10,10 @@ entry:
   main: src/plugin.joss
 native:
   protocol: joss-rpc-v1
-  windows-amd64: native/windows-amd64/joss_backup.exe
-  windows-arm64: native/windows-arm64/joss_backup.exe
-  linux-amd64: native/linux-amd64/joss_backup
-  linux-arm64: native/linux-arm64/joss_backup
-  darwin-amd64: native/darwin-amd64/joss_backup
-  darwin-arm64: native/darwin-arm64/joss_backup
+  windows-amd64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-windows-amd64.exe
+  windows-arm64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-windows-arm64.exe
+  linux-amd64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-linux-amd64
+  linux-arm64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-linux-arm64
+  darwin-amd64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-darwin-amd64
+  darwin-arm64: https://github.com/joss-language/joss_backup/releases/download/v2.0.4/joss_backup-darwin-arm64
 dependencies:
