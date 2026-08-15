@@ -62,6 +62,16 @@ class BackupBuilder {
         return $this
     }
 
+    func incremental() {
+        $this->type_value = "incremental"
+        return $this
+    }
+
+    func differential() {
+        $this->type_value = "differential"
+        return $this
+    }
+
     func provider($provider) {
         $this->provider_value = $provider
         return $this
