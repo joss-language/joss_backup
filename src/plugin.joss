@@ -47,8 +47,18 @@ try:
 except Exception as e:
     print(json.dumps({'ok': False, 'error': str(e), 'backups': []}))
 "
-        $raw = System::Run("python", ["-c", $pyScript, $destDir])
-        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta al listar respaldos", "backups": []}
+        $raw = ""
+        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+        ($customPy != "") ? {
+            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        } : {}
+        foreach ($pyCandidates as $cand) {
+            ($raw == "" || $raw == nil) ? {
+                $raw = System::Run($cand, ["-c", $pyScript, $destDir])
+            } : {}
+        }
+        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta al listar respaldos", "backups": []}
         return $res
     }
 
@@ -70,8 +80,18 @@ try:
 except Exception as e:
     print(json.dumps({'ok': False, 'deleted': False, 'error': str(e), 'backup_id': b_id}))
 "
-        $raw = System::Run("python", ["-c", $pyScript, $backup_id, $destDir])
-        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "deleted": false, "error": "Error al eliminar respaldo"}
+        $raw = ""
+        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+        ($customPy != "") ? {
+            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        } : {}
+        foreach ($pyCandidates as $cand) {
+            ($raw == "" || $raw == nil) ? {
+                $raw = System::Run($cand, ["-c", $pyScript, $backup_id, $destDir])
+            } : {}
+        }
+        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "deleted": false, "error": "Error al eliminar respaldo"}
         return $res
     }
 
@@ -120,8 +140,18 @@ try:
 except Exception as e:
     print(json.dumps({'ok': False, 'valid': False, 'error': str(e)}))
 "
-        $raw = System::Run("python", ["-c", $pyScript, $backup_id, $destDir, $pass])
-        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "valid": false, "error": "Error durante la verificación"}
+        $raw = ""
+        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+        ($customPy != "") ? {
+            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        } : {}
+        foreach ($pyCandidates as $cand) {
+            ($raw == "" || $raw == nil) ? {
+                $raw = System::Run($cand, ["-c", $pyScript, $backup_id, $destDir, $pass])
+            } : {}
+        }
+        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "valid": false, "error": "Error durante la verificación"}
         return $res
     }
 
@@ -140,8 +170,18 @@ try:
 except Exception as e:
     print(json.dumps({'ok': False, 'provider': 'local', 'connected': False, 'error': str(e)}))
 "
-        $raw = System::Run("python", ["-c", $pyScript, $destDir])
-        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "provider": $p, "connected": false}
+        $raw = ""
+        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+        ($customPy != "") ? {
+            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        } : {}
+        foreach ($pyCandidates as $cand) {
+            ($raw == "" || $raw == nil) ? {
+                $raw = System::Run($cand, ["-c", $pyScript, $destDir])
+            } : {}
+        }
+        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "provider": $p, "connected": false}
         return $res
     }
 
@@ -351,8 +391,18 @@ except Exception as e:
     print(json.dumps({'ok': False, 'error': str(e)}))
 "
             $optsJson = JSON::stringify($opts)
-            $raw = System::Run("python", ["-c", $pyScript, $optsJson])
-            $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta del motor de respaldo"}
+            $raw = ""
+            $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+            $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+            ($customPy != "") ? {
+                $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+            } : {}
+            foreach ($pyCandidates as $cand) {
+                ($raw == "" || $raw == nil) ? {
+                    $raw = System::Run($cand, ["-c", $pyScript, $optsJson])
+                } : {}
+            }
+            $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta del motor de respaldo"}
             
             ($res && $res["ok"] == true) ? {
                 print("[joss_backup] Respaldo generado con éxito: " . $res["backup_id"] . " (" . $res["filename"] . ")")
@@ -415,8 +465,18 @@ try:
 except Exception as e:
     print(json.dumps({'ok': False, 'restored': False, 'error': str(e)}))
 "
-            $raw = System::Run("python", ["-c", $pyScript, $bId, $destDir, $pass, $tDir])
-            $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "restored": false, "error": "No hubo respuesta al restaurar respaldo"}
+            $raw = ""
+            $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+            $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
+            ($customPy != "") ? {
+                $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+            } : {}
+            foreach ($pyCandidates as $cand) {
+                ($raw == "" || $raw == nil) ? {
+                    $raw = System::Run($cand, ["-c", $pyScript, $bId, $destDir, $pass, $tDir])
+                } : {}
+            }
+            $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "restored": false, "error": "No hubo respuesta al restaurar respaldo"}
             
             ($res && $res["ok"] == true) ? {
                 print("[joss_backup] Respaldo restaurado con éxito: " . $bId . " en " . $tDir)
