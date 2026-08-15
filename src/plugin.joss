@@ -12,22 +12,137 @@ class Backup {
     }
 
     func list($provider) {
-        $p = (empty($provider) == false) ? $provider : "local"
-        return {"ok": true, "provider": $p, "backups": []}
+        $p = ($provider && $provider != "") ? $provider : "local"
+        $destDir = env("BACKUP_PATH", "storage/backups")
+        
+        $pyScript = "import os, sys, json, datetime
+dest_dir = sys.argv[1] if len(sys.argv) > 1 else 'storage/backups'
+try:
+    if not os.path.exists(dest_dir):
+        print(json.dumps({'ok': True, 'provider': 'local', 'backups': []}))
+        sys.exit(0)
+    backups = []
+    for f in os.listdir(dest_dir):
+        if f.startswith('backup_') and (f.endswith('.zip') or f.endswith('.zip.enc')):
+            p = os.path.join(dest_dir, f)
+            stat = os.stat(p)
+            is_enc = f.endswith('.zip.enc')
+            b_id = f.replace('.zip.enc', '').replace('.zip', '')
+            b_type = 'full'
+            if '_database' in b_id: b_type = 'database'
+            elif '_files' in b_id: b_type = 'files'
+            date_str = datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            backups.append({
+                'id': b_id,
+                'filename': f,
+                'path': p.replace('\\\\', '/'),
+                'size': stat.st_size,
+                'type': b_type,
+                'encrypted': is_enc,
+                'date': date_str,
+                'provider': 'local'
+            })
+    backups.sort(key=lambda x: x['date'], reverse=True)
+    print(json.dumps({'ok': True, 'provider': 'local', 'backups': backups}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'error': str(e), 'backups': []}))
+"
+        $raw = System::Run("python", ["-c", $pyScript, $destDir])
+        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta al listar respaldos", "backups": []}
+        return $res
     }
 
     func delete($backup_id, $provider) {
-        $p = (empty($provider) == false) ? $provider : "local"
-        return {"ok": true, "deleted": true, "backup_id": $backup_id, "provider": $p}
+        $p = ($provider && $provider != "") ? $provider : "local"
+        $destDir = env("BACKUP_PATH", "storage/backups")
+        
+        $pyScript = "import os, sys, json
+b_id = sys.argv[1] if len(sys.argv) > 1 else ''
+dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
+try:
+    deleted = False
+    for ext in ('.zip', '.zip.enc', ''):
+        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
+        if os.path.exists(cand) and not os.path.isdir(cand):
+            os.remove(cand)
+            deleted = True
+    print(json.dumps({'ok': True, 'deleted': deleted, 'backup_id': b_id, 'provider': 'local'}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'deleted': False, 'error': str(e), 'backup_id': b_id}))
+"
+        $raw = System::Run("python", ["-c", $pyScript, $backup_id, $destDir])
+        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "deleted": false, "error": "Error al eliminar respaldo"}
+        return $res
     }
 
     func verify($backup_id, $provider, $password) {
-        $p = (empty($provider) == false) ? $provider : "local"
-        return {"ok": true, "valid": true, "backup_id": $backup_id, "provider": $p}
+        $p = ($provider && $provider != "") ? $provider : "local"
+        $destDir = env("BACKUP_PATH", "storage/backups")
+        $pass = ($password && $password != "") ? $password : env("APP_KEY", env("JWT_SECRET", ""))
+
+        $pyScript = "import os, sys, json, zipfile, io
+b_id = sys.argv[1] if len(sys.argv) > 1 else ''
+dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
+password = sys.argv[3] if len(sys.argv) > 3 else ''
+try:
+    target_path = None
+    for ext in ('.zip', '.zip.enc', ''):
+        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
+        if os.path.exists(cand) and not os.path.isdir(cand):
+            target_path = cand
+            break
+    if not target_path:
+        print(json.dumps({'ok': False, 'valid': False, 'error': f'Respaldo no encontrado: {b_id}'}))
+        sys.exit(0)
+    is_enc = target_path.endswith('.zip.enc')
+    if is_enc:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        with open(target_path, 'rb') as f: enc_bytes = f.read()
+        salt = enc_bytes[:16]
+        nonce = enc_bytes[16:28]
+        ct = enc_bytes[28:]
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+        key = kdf.derive(password.encode('utf-8'))
+        raw_bytes = AESGCM(key).decrypt(nonce, ct, None)
+        zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+    else:
+        zf = zipfile.ZipFile(target_path)
+    bad_file = zf.testzip()
+    if bad_file:
+        print(json.dumps({'ok': False, 'valid': False, 'error': f'Archivo corrupto: {bad_file}'}))
+        sys.exit(0)
+    manifest = {}
+    if 'manifest.json' in zf.namelist():
+        manifest = json.loads(zf.read('manifest.json').decode('utf-8'))
+    print(json.dumps({'ok': True, 'valid': True, 'backup_id': b_id, 'size': os.path.getsize(target_path), 'encrypted': is_enc, 'files_count': len(zf.namelist()), 'manifest': manifest}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'valid': False, 'error': str(e)}))
+"
+        $raw = System::Run("python", ["-c", $pyScript, $backup_id, $destDir, $pass])
+        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "valid": false, "error": "Error durante la verificación"}
+        return $res
     }
 
     func testProvider($provider) {
-        return {"ok": true, "provider": $provider, "connected": true}
+        $p = ($provider && $provider != "") ? $provider : "local"
+        $destDir = env("BACKUP_PATH", "storage/backups")
+        
+        $pyScript = "import os, sys, json
+dest_dir = sys.argv[1] if len(sys.argv) > 1 else 'storage/backups'
+try:
+    os.makedirs(dest_dir, exist_ok=True)
+    test_f = os.path.join(dest_dir, '.joss_write_test')
+    with open(test_f, 'w') as f: f.write('ok')
+    if os.path.exists(test_f): os.remove(test_f)
+    print(json.dumps({'ok': True, 'provider': 'local', 'connected': True, 'writable': True, 'path': dest_dir.replace('\\\\', '/')}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'provider': 'local', 'connected': False, 'error': str(e)}))
+"
+        $raw = System::Run("python", ["-c", $pyScript, $destDir])
+        $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "provider": $p, "connected": false}
+        return $res
     }
 
     func migrate($target, $token) {
@@ -40,11 +155,15 @@ class BackupBuilder {
         $this->mode = $mode
         $this->backup_id = $backup_id
         $this->type_value = "full"
-        $this->provider_value = env("STORAGE_DRIVER", "local")
+        $this->provider_value = "local"
+        $this->path_value = env("BACKUP_PATH", "storage/backups")
         $this->encrypt_value = false
         $this->password_value = ""
         $this->at_value = "02:00"
+        $this->frequency_value = "daily"
         $this->keep_value = 7
+        $this->target_dir = "storage/restore"
+        $this->last_error = ""
     }
 
     func full() {
@@ -77,7 +196,20 @@ class BackupBuilder {
         return $this
     }
 
-    func encrypt($password) {
+    func path($path) {
+        $this->path_value = $path
+        return $this
+    }
+
+    func encrypt($enabledOrPass) {
+        $this->encrypt_value = true
+        ($enabledOrPass && $enabledOrPass != true) ? {
+            $this->password_value = $enabledOrPass
+        } : {}
+        return $this
+    }
+
+    func password($password) {
         $this->encrypt_value = true
         $this->password_value = $password
         return $this
@@ -88,18 +220,246 @@ class BackupBuilder {
         return $this
     }
 
+    func daily() {
+        $this->frequency_value = "daily"
+        return $this
+    }
+
     func keep($count) {
         $this->keep_value = $count
         return $this
     }
 
-    func run() {
-        return {
-            "ok": true,
-            "mode": $this->mode,
+    func target($targetDir) {
+        $this->target_dir = $targetDir
+        return $this
+    }
+
+    func lastError() {
+        return $this->last_error
+    }
+
+    func save() {
+        $scheduleData = {
             "type": $this->type_value,
             "provider": $this->provider_value,
-            "backup_id": $this->backup_id
+            "at": $this->at_value,
+            "frequency": $this->frequency_value,
+            "keep": $this->keep_value,
+            "encrypt": $this->encrypt_value,
+            "saved_at": System::now()
         }
+        $destPath = "config/backup_schedule.json"
+        file_put_contents($destPath, JSON::stringify($scheduleData))
+        print("[joss_backup] Programación de respaldo guardada en " . $destPath)
+        return true
     }
+
+    func run() {
+        // Modo 1: CREAR RESPALDO
+        ($this->mode == "create") ? {
+            $pass = ($this->password_value != "") ? $this->password_value : env("APP_KEY", env("JWT_SECRET", "joss_backup_key"))
+            $opts = {
+                "type": $this->type_value,
+                "provider": $this->provider_value,
+                "dest_dir": $this->path_value,
+                "encrypt": $this->encrypt_value,
+                "password": $pass,
+                "keep": $this->keep_value,
+                "project_root": "."
+            }
+
+            // Si incluye base de datos, recopilar información del esquema / motor
+            $dbType = env("DB", "sqlite")
+            $dbHost = env("DB_HOST", "")
+            $dbName = env("DB_NAME", "")
+            $dbDump = "-- Joss Database Backup --\n-- Engine: " . $dbType . "\n-- Host: " . $dbHost . "\n-- Database: " . $dbName . "\n-- Date: " . System::now() . "\n"
+            $opts["database_dump"] = $dbDump
+
+            $pyScript = "import os, sys, json, datetime, zipfile
+opts = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+try:
+    b_type = opts.get('type', 'full')
+    dest_dir = opts.get('dest_dir', 'storage/backups')
+    os.makedirs(dest_dir, exist_ok=True)
+    now = datetime.datetime.now()
+    now_str = now.strftime('%Y%m%d_%H%M%S')
+    b_id = f'backup_{now_str}_{b_type}'
+    is_enc = bool(opts.get('encrypt', False))
+    password = opts.get('password', '')
+    zip_temp = os.path.join(dest_dir, f'{b_id}.tmp.zip')
+    manifest = {'id': b_id, 'version': '2.1.0', 'created_at': now.strftime('%Y-%m-%d %H:%M:%S'), 'type': b_type, 'provider': opts.get('provider', 'local'), 'encrypted': is_enc, 'files': []}
+    project_root = opts.get('project_root', '.')
+    ignore_dirs = {'.git', 'node_modules', 'build', 'dist', '.gemini', 'storage/backups', 'temp', 'tmp'}
+    with zipfile.ZipFile(zip_temp, 'w', zipfile.ZIP_DEFLATED) as z:
+        if b_type in ('full', 'files'):
+            for root, dirs, files in os.walk(project_root):
+                rel_root = os.path.relpath(root, project_root).replace('\\\\', '/')
+                if any(rel_root == ig or rel_root.startswith(ig + '/') for ig in ignore_dirs):
+                    dirs[:] = []
+                    continue
+                dirs[:] = [d for d in dirs if d not in ignore_dirs and f'{rel_root}/{d}'.strip('./') not in ignore_dirs]
+                for file in files:
+                    if file.endswith('.zip') or file.endswith('.tmp') or file == '.env.enc': continue
+                    full_f = os.path.join(root, file)
+                    arc_f = os.path.relpath(full_f, project_root).replace('\\\\', '/')
+                    if arc_f.startswith('storage/backups/'): continue
+                    try:
+                        z.write(full_f, arc_f)
+                        manifest['files'].append(arc_f)
+                    except Exception: pass
+        db_dump = opts.get('database_dump', '')
+        if db_dump and b_type in ('full', 'database'):
+            z.writestr('database.sql', db_dump)
+            manifest['has_database'] = True
+        z.writestr('manifest.json', json.dumps(manifest, indent=2))
+    if is_enc and password:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        with open(zip_temp, 'rb') as f: raw_b = f.read()
+        salt = os.urandom(16)
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+        key = kdf.derive(password.encode('utf-8'))
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, raw_b, None)
+        enc_b = salt + nonce + ct
+        final_fn = f'{b_id}.zip.enc'
+        final_p = os.path.join(dest_dir, final_fn)
+        with open(final_p, 'wb') as f: f.write(enc_b)
+        os.remove(zip_temp)
+    else:
+        final_fn = f'{b_id}.zip'
+        final_p = os.path.join(dest_dir, final_fn)
+        if os.path.exists(final_p): os.remove(final_p)
+        os.rename(zip_temp, final_p)
+    keep = int(opts.get('keep', 7))
+    if keep > 0:
+        entries = []
+        for f in os.listdir(dest_dir):
+            if f.startswith('backup_') and (f.endswith('.zip') or f.endswith('.zip.enc')):
+                p = os.path.join(dest_dir, f)
+                entries.append((os.path.getmtime(p), p))
+        entries.sort(key=lambda x: x[0], reverse=True)
+        if len(entries) > keep:
+            for _, path_to_del in entries[keep:]:
+                try: os.remove(path_to_del)
+                except Exception: pass
+    res = {'ok': True, 'backup_id': b_id, 'filename': final_fn, 'path': final_p.replace('\\\\', '/'), 'size': os.path.getsize(final_p), 'type': b_type, 'encrypted': is_enc, 'provider': opts.get('provider', 'local'), 'created_at': manifest['created_at'], 'files_count': len(manifest['files'])}
+    print(json.dumps(res))
+except Exception as e:
+    print(json.dumps({'ok': False, 'error': str(e)}))
+"
+            $optsJson = JSON::stringify($opts)
+            $raw = System::Run("python", ["-c", $pyScript, $optsJson])
+            $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta del motor de respaldo"}
+            
+            ($res && $res["ok"] == true) ? {
+                print("[joss_backup] Respaldo generado con éxito: " . $res["backup_id"] . " (" . $res["filename"] . ")")
+                $this->last_error = ""
+                return $res
+            } : {
+                $err = ($res && $res["error"]) ? $res["error"] : "Error desconocido generando respaldo"
+                $this->last_error = $err
+                print("[joss_backup] Error generando respaldo: " . $err)
+                return {"ok": false, "error": $err}
+            }
+        } : {}
+
+        // Modo 2: RESTAURAR RESPALDO
+        ($this->mode == "restore") ? {
+            $pass = ($this->password_value != "") ? $this->password_value : env("APP_KEY", env("JWT_SECRET", ""))
+            $bId = $this->backup_id
+            $destDir = $this->path_value
+            $tDir = $this->target_dir
+
+            $pyScript = "import os, sys, json, zipfile, io
+b_id = sys.argv[1] if len(sys.argv) > 1 else ''
+dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
+password = sys.argv[3] if len(sys.argv) > 3 else ''
+target_dir = sys.argv[4] if len(sys.argv) > 4 else 'storage/restore'
+try:
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = None
+    for ext in ('.zip', '.zip.enc', ''):
+        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
+        if os.path.exists(cand) and not os.path.isdir(cand):
+            target_path = cand
+            break
+    if not target_path:
+        print(json.dumps({'ok': False, 'restored': False, 'error': f'Respaldo no encontrado: {b_id}'}))
+        sys.exit(0)
+    is_enc = target_path.endswith('.zip.enc')
+    if is_enc:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        with open(target_path, 'rb') as f: enc_b = f.read()
+        salt = enc_b[:16]
+        nonce = enc_b[16:28]
+        ct = enc_b[28:]
+        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+        key = kdf.derive(password.encode('utf-8'))
+        raw_b = AESGCM(key).decrypt(nonce, ct, None)
+        zf = zipfile.ZipFile(io.BytesIO(raw_b))
+    else:
+        zf = zipfile.ZipFile(target_path)
+    restored = []
+    for member in zf.namelist():
+        if member.startswith('/') or '..' in member: continue
+        out_f = os.path.join(target_dir, member)
+        os.makedirs(os.path.dirname(out_f), exist_ok=True)
+        with open(out_f, 'wb') as f: f.write(zf.read(member))
+        restored.append(member)
+    print(json.dumps({'ok': True, 'restored': True, 'backup_id': b_id, 'target_dir': target_dir.replace('\\\\', '/'), 'files_count': len(restored)}))
+except Exception as e:
+    print(json.dumps({'ok': False, 'restored': False, 'error': str(e)}))
+"
+            $raw = System::Run("python", ["-c", $pyScript, $bId, $destDir, $pass, $tDir])
+            $res = ($raw != "") ? JSON::parse($raw) : {"ok": false, "restored": false, "error": "No hubo respuesta al restaurar respaldo"}
+            
+            ($res && $res["ok"] == true) ? {
+                print("[joss_backup] Respaldo restaurado con éxito: " . $bId . " en " . $tDir)
+                $this->last_error = ""
+                return $res
+            } : {
+                $err = ($res && $res["error"]) ? $res["error"] : "Error desconocido restaurando respaldo"
+                $this->last_error = $err
+                print("[joss_backup] Error al restaurar respaldo: " . $err)
+                return {"ok": false, "restored": false, "error": $err}
+            }
+        } : {}
+
+        // Modo 3: SCHEDULE
+        ($this->mode == "schedule") ? {
+            $this->save()
+            return {"ok": true, "scheduled": true, "type": $this->type_value, "at": $this->at_value, "frequency": $this->frequency_value}
+        } : {}
+
+        return {"ok": false, "error": "Modo de ejecución no reconocido"}
+    }
+}
+
+func create() {
+    return (new Backup())->create()
+}
+
+func restore($id) {
+    return (new Backup())->restore($id)
+}
+
+func schedule() {
+    return (new Backup())->schedule()
+}
+
+func list($provider) {
+    return (new Backup())->list($provider)
+}
+
+func verify($id, $provider, $password) {
+    return (new Backup())->verify($id, $provider, $password)
+}
+
+func delete($id, $provider) {
+    return (new Backup())->delete($id, $provider)
 }

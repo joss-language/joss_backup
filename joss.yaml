@@ -1,6 +1,6 @@
 name: joss_backup
-version: 2.0.6
-description: Plugin oficial para realizar backups y programar respaldos en Joss.
+version: 2.1.0
+description: Plugin oficial para realizar respaldos completos, de archivos o base de datos, con cifrado AES-256 y restauración en Joss.
 repository: https://github.com/joss-language/joss_backup
 license: MIT
 type: joss
