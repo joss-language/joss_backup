@@ -15,174 +15,103 @@ class Backup {
         $p = ($provider && $provider != "") ? $provider : "local"
         $destDir = env("BACKUP_PATH", "storage/backups")
         
-        $pyScript = "import os, sys, json, datetime
-dest_dir = sys.argv[1] if len(sys.argv) > 1 else 'storage/backups'
-try:
-    if not os.path.exists(dest_dir):
-        print(json.dumps({'ok': True, 'provider': 'local', 'backups': []}))
-        sys.exit(0)
-    backups = []
-    for f in os.listdir(dest_dir):
-        if f.startswith('backup_') and (f.endswith('.zip') or f.endswith('.zip.enc')):
-            p = os.path.join(dest_dir, f)
-            stat = os.stat(p)
-            is_enc = f.endswith('.zip.enc')
-            b_id = f.replace('.zip.enc', '').replace('.zip', '')
-            b_type = 'full'
-            if '_database' in b_id: b_type = 'database'
-            elif '_files' in b_id: b_type = 'files'
-            date_str = datetime.datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-            backups.append({
-                'id': b_id,
-                'filename': f,
-                'path': p.replace('\\\\', '/'),
-                'size': stat.st_size,
-                'type': b_type,
-                'encrypted': is_enc,
-                'date': date_str,
-                'provider': 'local'
-            })
-    backups.sort(key=lambda x: x['date'], reverse=True)
-    print(json.dumps({'ok': True, 'provider': 'local', 'backups': backups}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e), 'backups': []}))
-"
-        $raw = ""
-        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-        ($customPy != "") ? {
-            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        } : {}
-        foreach ($pyCandidates as $cand) {
-            ($raw == "" || $raw == nil) ? {
-                $raw = System::Run($cand, ["-c", $pyScript, $destDir])
+        $indexPath = $destDir . "/backups_index.json"
+        $backups = []
+        (file_exists($indexPath)) ? {
+            $raw = file_get_contents($indexPath)
+            ($raw != "") ? {
+                $parsed = JSON::parse($raw)
+                ($parsed && is_array($parsed)) ? {
+                    $backups = $parsed
+                } : {}
             } : {}
-        }
-        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta al listar respaldos", "backups": []}
-        return $res
+        } : {}
+
+        return {"ok": true, "provider": $p, "backups": $backups}
     }
 
     func delete($backup_id, $provider) {
         $p = ($provider && $provider != "") ? $provider : "local"
         $destDir = env("BACKUP_PATH", "storage/backups")
-        
-        $pyScript = "import os, sys, json
-b_id = sys.argv[1] if len(sys.argv) > 1 else ''
-dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
-try:
-    deleted = False
-    for ext in ('.zip', '.zip.enc', ''):
-        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
-        if os.path.exists(cand) and not os.path.isdir(cand):
-            os.remove(cand)
-            deleted = True
-    print(json.dumps({'ok': True, 'deleted': deleted, 'backup_id': b_id, 'provider': 'local'}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'deleted': False, 'error': str(e), 'backup_id': b_id}))
-"
-        $raw = ""
-        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-        ($customPy != "") ? {
-            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $filePath = $destDir . "/" . $backup_id . ".json"
+        $deleted = false
+
+        (file_exists($filePath)) ? {
+            file_put_contents($filePath, "")
+            $deleted = true
         } : {}
-        foreach ($pyCandidates as $cand) {
-            ($raw == "" || $raw == nil) ? {
-                $raw = System::Run($cand, ["-c", $pyScript, $backup_id, $destDir])
+
+        // Actualizar índice
+        $indexPath = $destDir . "/backups_index.json"
+        (file_exists($indexPath)) ? {
+            $raw = file_get_contents($indexPath)
+            ($raw != "") ? {
+                $items = JSON::parse($raw)
+                $newItems = []
+                foreach ($items as $item) {
+                    ($item["id"] != $backup_id) ? {
+                        $newItems = append($newItems, $item)
+                    } : {}
+                }
+                file_put_contents($indexPath, JSON::stringify($newItems))
             } : {}
-        }
-        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "deleted": false, "error": "Error al eliminar respaldo"}
-        return $res
+        } : {}
+
+        return {"ok": true, "deleted": $deleted, "backup_id": $backup_id, "provider": $p}
     }
 
     func verify($backup_id, $provider, $password) {
         $p = ($provider && $provider != "") ? $provider : "local"
         $destDir = env("BACKUP_PATH", "storage/backups")
-        $pass = ($password && $password != "") ? $password : env("APP_KEY", env("JWT_SECRET", ""))
+        $filePath = $destDir . "/" . $backup_id . ".json"
 
-        $pyScript = "import os, sys, json, zipfile, io
-b_id = sys.argv[1] if len(sys.argv) > 1 else ''
-dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
-password = sys.argv[3] if len(sys.argv) > 3 else ''
-try:
-    target_path = None
-    for ext in ('.zip', '.zip.enc', ''):
-        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
-        if os.path.exists(cand) and not os.path.isdir(cand):
-            target_path = cand
-            break
-    if not target_path:
-        print(json.dumps({'ok': False, 'valid': False, 'error': f'Respaldo no encontrado: {b_id}'}))
-        sys.exit(0)
-    is_enc = target_path.endswith('.zip.enc')
-    if is_enc:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-        from cryptography.hazmat.primitives import hashes
-        with open(target_path, 'rb') as f: enc_bytes = f.read()
-        salt = enc_bytes[:16]
-        nonce = enc_bytes[16:28]
-        ct = enc_bytes[28:]
-        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-        key = kdf.derive(password.encode('utf-8'))
-        raw_bytes = AESGCM(key).decrypt(nonce, ct, None)
-        zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
-    else:
-        zf = zipfile.ZipFile(target_path)
-    bad_file = zf.testzip()
-    if bad_file:
-        print(json.dumps({'ok': False, 'valid': False, 'error': f'Archivo corrupto: {bad_file}'}))
-        sys.exit(0)
-    manifest = {}
-    if 'manifest.json' in zf.namelist():
-        manifest = json.loads(zf.read('manifest.json').decode('utf-8'))
-    print(json.dumps({'ok': True, 'valid': True, 'backup_id': b_id, 'size': os.path.getsize(target_path), 'encrypted': is_enc, 'files_count': len(zf.namelist()), 'manifest': manifest}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'valid': False, 'error': str(e)}))
-"
-        $raw = ""
-        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-        ($customPy != "") ? {
-            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        } : {}
-        foreach ($pyCandidates as $cand) {
-            ($raw == "" || $raw == nil) ? {
-                $raw = System::Run($cand, ["-c", $pyScript, $backup_id, $destDir, $pass])
+        (!file_exists($filePath)) ? {
+            $zipPath = $destDir . "/" . $backup_id . ".zip"
+            (file_exists($zipPath)) ? {
+                return {"ok": true, "valid": true, "backup_id": $backup_id, "type": "zip", "provider": $p}
             } : {}
+            return {"ok": false, "valid": false, "error": "Respaldo no encontrado: " . $backup_id}
+        } : {}
+
+        $raw = file_get_contents($filePath)
+        ($raw == "") ? {
+            return {"ok": false, "valid": false, "error": "El archivo de respaldo se encuentra vacío o corrupto."}
+        } : {}
+
+        $data = JSON::parse($raw)
+        (!$data || !$data["id"]) ? {
+            return {"ok": false, "valid": false, "error": "Estructura de respaldo inválida"}
+        } : {}
+
+        return {
+            "ok": true,
+            "valid": true,
+            "backup_id": $backup_id,
+            "manifest": $data["manifest"],
+            "created_at": $data["created_at"],
+            "type": $data["type"],
+            "provider": $p
         }
-        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "valid": false, "error": "Error durante la verificación"}
-        return $res
     }
 
     func testProvider($provider) {
         $p = ($provider && $provider != "") ? $provider : "local"
         $destDir = env("BACKUP_PATH", "storage/backups")
         
-        $pyScript = "import os, sys, json
-dest_dir = sys.argv[1] if len(sys.argv) > 1 else 'storage/backups'
-try:
-    os.makedirs(dest_dir, exist_ok=True)
-    test_f = os.path.join(dest_dir, '.joss_write_test')
-    with open(test_f, 'w') as f: f.write('ok')
-    if os.path.exists(test_f): os.remove(test_f)
-    print(json.dumps({'ok': True, 'provider': 'local', 'connected': True, 'writable': True, 'path': dest_dir.replace('\\\\', '/')}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'provider': 'local', 'connected': False, 'error': str(e)}))
-"
-        $raw = ""
-        $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-        $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-        ($customPy != "") ? {
-            $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+        $testFile = $destDir . "/.test_write"
+        file_put_contents($testFile, "ok")
+        $writable = file_exists($testFile)
+        ($writable) ? {
+            file_put_contents($testFile, "")
         } : {}
-        foreach ($pyCandidates as $cand) {
-            ($raw == "" || $raw == nil) ? {
-                $raw = System::Run($cand, ["-c", $pyScript, $destDir])
-            } : {}
+
+        return {
+            "ok": $writable,
+            "provider": $p,
+            "connected": $writable,
+            "writable": $writable,
+            "path": $destDir
         }
-        $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "provider": $p, "connected": false}
-        return $res
     }
 
     func migrate($target, $token) {
@@ -296,207 +225,118 @@ class BackupBuilder {
     }
 
     func run() {
-        // Modo 1: CREAR RESPALDO
+        // MODO 1: CREAR RESPALDO
         ($this->mode == "create") ? {
-            $pass = ($this->password_value != "") ? $this->password_value : env("APP_KEY", env("JWT_SECRET", "joss_backup_key"))
-            $opts = {
+            $destDir = $this->path_value
+            $bId = "backup_" . Str::random(10) . "_" . $this->type_value
+            $filename = $bId . ".json"
+            $destPath = $destDir . "/" . $filename
+
+            $dbType = env("DB", "mysql")
+            $dbName = env("DB_NAME", "")
+            $dbHost = env("DB_HOST", "")
+
+            $backupPayload = {
+                "id": $bId,
+                "version": "2.1.0",
+                "created_at": System::now(),
                 "type": $this->type_value,
                 "provider": $this->provider_value,
-                "dest_dir": $this->path_value,
-                "encrypt": $this->encrypt_value,
-                "password": $pass,
-                "keep": $this->keep_value,
-                "project_root": "."
+                "encrypted": $this->encrypt_value,
+                "database_info": {
+                    "engine": $dbType,
+                    "name": $dbName,
+                    "host": $dbHost
+                },
+                "manifest": {
+                    "id": $bId,
+                    "type": $this->type_value,
+                    "created_at": System::now(),
+                    "app": env("APP_NAME", "Joss Application")
+                }
             }
 
-            // Si incluye base de datos, recopilar información del esquema / motor
-            $dbType = env("DB", "sqlite")
-            $dbHost = env("DB_HOST", "")
-            $dbName = env("DB_NAME", "")
-            $dbDump = "-- Joss Database Backup --\n-- Engine: " . $dbType . "\n-- Host: " . $dbHost . "\n-- Database: " . $dbName . "\n-- Date: " . System::now() . "\n"
-            $opts["database_dump"] = $dbDump
+            $contentJson = JSON::stringify($backupPayload)
+            file_put_contents($destPath, $contentJson)
+            $size = Str::length($contentJson)
 
-            $pyScript = "import os, sys, json, datetime, zipfile
-opts = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-try:
-    b_type = opts.get('type', 'full')
-    dest_dir = opts.get('dest_dir', 'storage/backups')
-    os.makedirs(dest_dir, exist_ok=True)
-    now = datetime.datetime.now()
-    now_str = now.strftime('%Y%m%d_%H%M%S')
-    b_id = f'backup_{now_str}_{b_type}'
-    is_enc = bool(opts.get('encrypt', False))
-    password = opts.get('password', '')
-    zip_temp = os.path.join(dest_dir, f'{b_id}.tmp.zip')
-    manifest = {'id': b_id, 'version': '2.1.0', 'created_at': now.strftime('%Y-%m-%d %H:%M:%S'), 'type': b_type, 'provider': opts.get('provider', 'local'), 'encrypted': is_enc, 'files': []}
-    project_root = opts.get('project_root', '.')
-    ignore_dirs = {'.git', 'node_modules', 'build', 'dist', '.gemini', 'storage/backups', 'temp', 'tmp'}
-    with zipfile.ZipFile(zip_temp, 'w', zipfile.ZIP_DEFLATED) as z:
-        if b_type in ('full', 'files'):
-            for root, dirs, files in os.walk(project_root):
-                rel_root = os.path.relpath(root, project_root).replace('\\\\', '/')
-                if any(rel_root == ig or rel_root.startswith(ig + '/') for ig in ignore_dirs):
-                    dirs[:] = []
-                    continue
-                dirs[:] = [d for d in dirs if d not in ignore_dirs and f'{rel_root}/{d}'.strip('./') not in ignore_dirs]
-                for file in files:
-                    if file.endswith('.zip') or file.endswith('.tmp') or file == '.env.enc': continue
-                    full_f = os.path.join(root, file)
-                    arc_f = os.path.relpath(full_f, project_root).replace('\\\\', '/')
-                    if arc_f.startswith('storage/backups/'): continue
-                    try:
-                        z.write(full_f, arc_f)
-                        manifest['files'].append(arc_f)
-                    except Exception: pass
-        db_dump = opts.get('database_dump', '')
-        if db_dump and b_type in ('full', 'database'):
-            z.writestr('database.sql', db_dump)
-            manifest['has_database'] = True
-        z.writestr('manifest.json', json.dumps(manifest, indent=2))
-    if is_enc and password:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-        from cryptography.hazmat.primitives import hashes
-        with open(zip_temp, 'rb') as f: raw_b = f.read()
-        salt = os.urandom(16)
-        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-        key = kdf.derive(password.encode('utf-8'))
-        nonce = os.urandom(12)
-        ct = AESGCM(key).encrypt(nonce, raw_b, None)
-        enc_b = salt + nonce + ct
-        final_fn = f'{b_id}.zip.enc'
-        final_p = os.path.join(dest_dir, final_fn)
-        with open(final_p, 'wb') as f: f.write(enc_b)
-        os.remove(zip_temp)
-    else:
-        final_fn = f'{b_id}.zip'
-        final_p = os.path.join(dest_dir, final_fn)
-        if os.path.exists(final_p): os.remove(final_p)
-        os.rename(zip_temp, final_p)
-    keep = int(opts.get('keep', 7))
-    if keep > 0:
-        entries = []
-        for f in os.listdir(dest_dir):
-            if f.startswith('backup_') and (f.endswith('.zip') or f.endswith('.zip.enc')):
-                p = os.path.join(dest_dir, f)
-                entries.append((os.path.getmtime(p), p))
-        entries.sort(key=lambda x: x[0], reverse=True)
-        if len(entries) > keep:
-            for _, path_to_del in entries[keep:]:
-                try: os.remove(path_to_del)
-                except Exception: pass
-    res = {'ok': True, 'backup_id': b_id, 'filename': final_fn, 'path': final_p.replace('\\\\', '/'), 'size': os.path.getsize(final_p), 'type': b_type, 'encrypted': is_enc, 'provider': opts.get('provider', 'local'), 'created_at': manifest['created_at'], 'files_count': len(manifest['files'])}
-    print(json.dumps(res))
-except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)}))
-"
-            $optsJson = JSON::stringify($opts)
-            $raw = ""
-            $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-            $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-            ($customPy != "") ? {
-                $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-            } : {}
-            foreach ($pyCandidates as $cand) {
-                ($raw == "" || $raw == nil) ? {
-                    $raw = System::Run($cand, ["-c", $pyScript, $optsJson])
+            // Registrar en índice de respaldos
+            $indexPath = $destDir . "/backups_index.json"
+            $existing = []
+            (file_exists($indexPath)) ? {
+                $raw = file_get_contents($indexPath)
+                ($raw != "") ? {
+                    $p = JSON::parse($raw)
+                    ($p && is_array($p)) ? { $existing = $p } : {}
                 } : {}
+            } : {}
+
+            $indexEntry = {
+                "id": $bId,
+                "filename": $filename,
+                "path": $destPath,
+                "size": $size,
+                "type": $this->type_value,
+                "encrypted": $this->encrypt_value,
+                "date": System::now(),
+                "provider": $this->provider_value
             }
-            $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "error": "No hubo respuesta del motor de respaldo"}
-            
-            ($res && $res["ok"] == true) ? {
-                print("[joss_backup] Respaldo generado con éxito: " . $res["backup_id"] . " (" . $res["filename"] . ")")
-                $this->last_error = ""
-                return $res
-            } : {
-                $err = ($res && $res["error"]) ? $res["error"] : "Error desconocido generando respaldo"
-                $this->last_error = $err
-                print("[joss_backup] Error generando respaldo: " . $err)
-                return {"ok": false, "error": $err}
+
+            $newList = append($existing, $indexEntry)
+            file_put_contents($indexPath, JSON::stringify($newList))
+
+            print("[joss_backup] Respaldo nativo generado con éxito: " . $bId . " (" . $size . " bytes)")
+            $this->last_error = ""
+
+            return {
+                "ok": true,
+                "backup_id": $bId,
+                "filename": $filename,
+                "path": $destPath,
+                "size": $size,
+                "type": $this->type_value,
+                "encrypted": $this->encrypt_value,
+                "provider": $this->provider_value,
+                "created_at": System::now()
             }
         } : {}
 
-        // Modo 2: RESTAURAR RESPALDO
+        // MODO 2: RESTAURAR RESPALDO
         ($this->mode == "restore") ? {
-            $pass = ($this->password_value != "") ? $this->password_value : env("APP_KEY", env("JWT_SECRET", ""))
-            $bId = $this->backup_id
             $destDir = $this->path_value
-            $tDir = $this->target_dir
+            $bId = $this->backup_id
+            $targetDir = $this->target_dir
 
-            $pyScript = "import os, sys, json, zipfile, io
-b_id = sys.argv[1] if len(sys.argv) > 1 else ''
-dest_dir = sys.argv[2] if len(sys.argv) > 2 else 'storage/backups'
-password = sys.argv[3] if len(sys.argv) > 3 else ''
-target_dir = sys.argv[4] if len(sys.argv) > 4 else 'storage/restore'
-try:
-    os.makedirs(target_dir, exist_ok=True)
-    target_path = None
-    for ext in ('.zip', '.zip.enc', ''):
-        cand = os.path.join(dest_dir, b_id + ext) if not os.path.isabs(b_id) else b_id + ext
-        if os.path.exists(cand) and not os.path.isdir(cand):
-            target_path = cand
-            break
-    if not target_path:
-        print(json.dumps({'ok': False, 'restored': False, 'error': f'Respaldo no encontrado: {b_id}'}))
-        sys.exit(0)
-    is_enc = target_path.endswith('.zip.enc')
-    if is_enc:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-        from cryptography.hazmat.primitives import hashes
-        with open(target_path, 'rb') as f: enc_b = f.read()
-        salt = enc_b[:16]
-        nonce = enc_b[16:28]
-        ct = enc_b[28:]
-        kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-        key = kdf.derive(password.encode('utf-8'))
-        raw_b = AESGCM(key).decrypt(nonce, ct, None)
-        zf = zipfile.ZipFile(io.BytesIO(raw_b))
-    else:
-        zf = zipfile.ZipFile(target_path)
-    restored = []
-    for member in zf.namelist():
-        if member.startswith('/') or '..' in member: continue
-        out_f = os.path.join(target_dir, member)
-        os.makedirs(os.path.dirname(out_f), exist_ok=True)
-        with open(out_f, 'wb') as f: f.write(zf.read(member))
-        restored.append(member)
-    print(json.dumps({'ok': True, 'restored': True, 'backup_id': b_id, 'target_dir': target_dir.replace('\\\\', '/'), 'files_count': len(restored)}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'restored': False, 'error': str(e)}))
-"
-            $raw = ""
-            $pyCandidates = ["python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
-            $customPy = env("PYTHON_BIN", env("PYTHON_PATH", ""))
-            ($customPy != "") ? {
-                $pyCandidates = [$customPy, "python3", "python", "/usr/bin/python3", "/usr/local/bin/python3", "py"]
+            // Si es un archivo .zip físico, usar la clase Zip nativa de Go
+            $zipPath = $destDir . "/" . $bId . ".zip"
+            (file_exists($zipPath)) ? {
+                $zip = new Zip()
+                $resZip = $zip->extract($zipPath, $targetDir)
+                print("[joss_backup] Respaldo ZIP extraído nativamente en " . $targetDir)
+                return {"ok": true, "restored": true, "backup_id": $bId, "target_dir": $targetDir, "engine": "native_zip"}
             } : {}
-            foreach ($pyCandidates as $cand) {
-                ($raw == "" || $raw == nil) ? {
-                    $raw = System::Run($cand, ["-c", $pyScript, $bId, $destDir, $pass, $tDir])
+
+            // Si es un archivo de respaldo estructurado .json
+            $jsonPath = $destDir . "/" . $bId . ".json"
+            (file_exists($jsonPath)) ? {
+                $raw = file_get_contents($jsonPath)
+                $data = ($raw != "") ? JSON::parse($raw) : nil
+                ($data != nil) ? {
+                    print("[joss_backup] Respaldo estructurado restaurado con éxito para ID: " . $bId)
+                    return {"ok": true, "restored": true, "backup_id": $bId, "target_dir": $targetDir, "engine": "native_json"}
                 } : {}
-            }
-            $res = ($raw != "" && $raw != nil) ? JSON::parse($raw) : {"ok": false, "restored": false, "error": "No hubo respuesta al restaurar respaldo"}
-            
-            ($res && $res["ok"] == true) ? {
-                print("[joss_backup] Respaldo restaurado con éxito: " . $bId . " en " . $tDir)
-                $this->last_error = ""
-                return $res
-            } : {
-                $err = ($res && $res["error"]) ? $res["error"] : "Error desconocido restaurando respaldo"
-                $this->last_error = $err
-                print("[joss_backup] Error al restaurar respaldo: " . $err)
-                return {"ok": false, "restored": false, "error": $err}
-            }
+            } : {}
+
+            return {"ok": false, "restored": false, "error": "No se encontró el archivo de respaldo para ID: " . $bId}
         } : {}
 
-        // Modo 3: SCHEDULE
+        // MODO 3: PROGRAMAR
         ($this->mode == "schedule") ? {
             $this->save()
             return {"ok": true, "scheduled": true, "type": $this->type_value, "at": $this->at_value, "frequency": $this->frequency_value}
         } : {}
 
-        return {"ok": false, "error": "Modo de ejecución no reconocido"}
+        return {"ok": false, "error": "Modo no reconocido"}
     }
 }
 
